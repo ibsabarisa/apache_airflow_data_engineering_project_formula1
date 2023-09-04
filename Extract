@@ -1,0 +1,49 @@
+from datetime import datetime
+import os
+import json
+import requests
+from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.http.sensors.http import HttpSensor
+
+# Define the DAG
+dag = DAG('ergast_all_years', 
+          description='Fetch F1 data from Ergast API for all years and store in MySQL',
+          schedule_interval='@daily',
+          start_date=datetime(2023, 9, 4), 
+          catchup=False)
+
+# Define the start task as a DummyOperator
+start = DummyOperator(task_id='start', dag=dag)
+
+# Define an HttpSensor to check if the API is available
+is_api_available = HttpSensor(
+    task_id='is_api_available',
+    http_conn_id='<**Your Ergast API Connection ID**>',
+    endpoint='/api/f1/1950.json',
+    poke_interval=5,
+    timeout=20,
+    mode='poke',
+    dag=dag
+)
+
+# Define a Python function to fetch Formula 1 data for all years from the Ergast API
+def fetch_all_years():
+    base_url = 'http://ergast.com/api/f1'
+    for year in range(1950, 2024):
+        response = requests.get(f"{base_url}/{year}.json")
+        if response.status_code == 200:
+            with open(f'/opt/airflow/dags/f1_data_{year}.json', 'w') as f:
+                json.dump(response.json(), f)
+        else:
+            print(f"Failed to fetch data for year {year}")
+
+# Define a PythonOperator to fetch all F1 data
+fetch_all_data = PythonOperator(
+    task_id='fetch_all_f1_data',
+    python_callable=fetch_all_years,
+    dag=dag
+)
+
+start >> is_api_available >> fetch_all_data
