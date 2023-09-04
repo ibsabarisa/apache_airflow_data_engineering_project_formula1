@@ -1,0 +1,31 @@
+# Whether to load the DAG examples that ship with Airflow. It's good to
+# get started, but you probably want to set this to ``False`` in a production
+# environment
+load_examples = <CHANGE AS DESIRED, EITHER True or False>
+
+
+# The executor class that airflow should use. Choices include
+# ``SequentialExecutor``, ``LocalExecutor``, ``CeleryExecutor``, ``DaskExecutor``,
+# ``KubernetesExecutor``, ``CeleryKubernetesExecutor`` or the
+# full import path to the class when using a custom executor.
+executor = <CHANGE AS DESIRED TO SequentialExecutor, LocalExecutor, or CeleryExecutor>
+
+# Secret key to save connection passwords in the db
+fernet_key = <ENTER GENERATED FERNET KEY>
+#run this in command prompt to generate fernet keys:
+#pip install cryptography
+#from cryptography.fernet import Fernet
+#fernet_key = Fernet.generate_key()
+#print(fernet_key.decode())
+
+#[database]
+# The SqlAlchemy connection string to the metadata database.
+# SqlAlchemy supports many different database engines.
+# More information here:
+# http://airflow.apache.org/docs/apache-airflow/stable/howto/set-up-database.html#database-uri
+#sql_alchemy_conn = sqlite:////opt/airflow/airflow.db
+sql_alchemy_conn = mysql+mysqldb://<user>:<password>@<host>[:<port>]/<dbname>
+#ensure proper configuration in my sql using:
+#CREATE DATABASE airflow_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#CREATE USER 'airflow_user' IDENTIFIED BY 'airflow_pass';
+#GRANT ALL PRIVILEGES ON airflow_db.* TO 'airflow_user';
