@@ -1,0 +1,54 @@
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.hooks.S3_hook import S3Hook
+from sqlalchemy import create_engine
+import pandas as pd
+
+dag = DAG(
+    '<DAG_NAME>',
+    description='<DESCRIPTION>',
+    schedule_interval='@daily',
+    start_date=datetime(2023, 9, 4),
+    catchup=False
+)
+
+def upload_s3(file_name, key, bucket_name):
+    hook = S3Hook('<AWS_S3_CONNECTION_ID>')
+    hook.load_file(filename=file_name, key=key, bucket_name=bucket_name)
+    return True
+
+def extract_mysql_and_save_file():
+    # Update MySQL connection details
+    engine = create_engine('<MYSQL_CONNECTION_STRING>')
+    
+    # Update with your table name
+    query = "<SQL_QUERY>"
+    df = pd.read_sql(query, engine)
+    
+    # Update the local file path
+    file_name = '<LOCAL_FILE_PATH>'
+    df.to_csv(file_name, index=False)
+    
+    return file_name
+
+# Extract MySQL data and save it to a CSV file 
+task_extract_and_save = PythonOperator(
+    task_id='<EXTRACT_AND_SAVE_TASK_ID>',
+    python_callable=extract_mysql_and_save_file,
+    dag=dag
+)
+
+# Upload the saved file to an AWS S3 bucket
+task_upload_s3 = PythonOperator(
+    task_id='<UPLOAD_S3_TASK_ID>',
+    python_callable=upload_s3,
+    op_args=[extract_mysql_and_save_file()],
+    op_kwargs={
+        'key': '<S3_KEY>',
+        'bucket_name': '<S3_BUCKET_NAME>'
+    },
+    dag=dag
+)
+
+task_extract_and_save >> task_upload_s3
