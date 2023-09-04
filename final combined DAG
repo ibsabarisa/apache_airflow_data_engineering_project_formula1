@@ -1,0 +1,142 @@
+from datetime import datetime
+import os
+import json
+import requests
+import pandas as pd
+from sqlalchemy import create_engine
+from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.http.sensors.http import HttpSensor
+from airflow.operators.mysql_operator import MySqlOperator
+from airflow.hooks.mysql_hook import MySqlHook
+from airflow.hooks.S3_hook import S3Hook
+
+# Define the DAG
+dag = DAG('<DAG_NAME>',
+          description='<DESCRIPTION>',
+          schedule_interval='@daily',
+          start_date=datetime(2023, 9, 4),
+          catchup=False)
+
+# Dummy start task
+start = DummyOperator(task_id='start', dag=dag)
+
+# Task 1: HttpSensor to check if the API is available
+is_api_available = HttpSensor(
+    task_id='is_api_available',
+    http_conn_id='<HTTP_CONN_ID>',
+    endpoint='<API_ENDPOINT>',
+    poke_interval=5,
+    timeout=20,
+    mode='poke',
+    dag=dag
+)
+
+# Task 2: Python function to fetch Formula 1 data for all years from the Ergast API
+def fetch_all_years():
+    base_url = '<API_BASE_URL>'
+    for year in range(1950, 2024):
+        response = requests.get(f"{base_url}/{year}.json")
+        if response.status_code == 200:
+            with open(f'/opt/airflow/dags/f1_data_{year}.json', 'w') as f:
+                json.dump(response.json(), f)
+        else:
+            print(f"Failed to fetch data for year {year}")
+
+fetch_all_data = PythonOperator(
+    task_id='fetch_all_f1_data',
+    python_callable=fetch_all_years,
+    dag=dag
+)
+
+# Task 3: Create MySQL table
+create_table_mssql_task = MySqlOperator(
+    task_id="create_post_table",
+    mysql_conn_id='<MYSQL_CONN_ID>',
+    sql="""CREATE TABLE IF NOT EXISTS Race (
+        race_id INT AUTO_INCREMENT PRIMARY KEY,
+        season VARCHAR(4),
+        round INT,
+        url VARCHAR(255),
+        raceName VARCHAR(255),
+        circuitId VARCHAR(255),
+        circuitName VARCHAR(255),
+        circuitLatitude FLOAT,
+        circuitLongitude FLOAT,
+        circuitLocality VARCHAR(255),
+        circuitCountry VARCHAR(255),
+        date DATE
+    );""",
+    dag=dag
+)
+
+# Task 4: Insert data into MySQL
+def insert_mysql_hook():
+    mysql_hook = MySqlHook(mysql_conn_id='<MYSQL_CONN_ID>', schema='<SCHEMA_NAME>')
+    directory_path = '/opt/airflow/dags/'
+    for filename in os.listdir(directory_path):
+        if filename.startswith('f1_data_') and filename.endswith('.json'):
+            filepath = os.path.join(directory_path, filename)
+            with open(filepath) as f:
+                data = f.read()
+                djson = json.loads(data)
+                races = djson.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+                if not isinstance(races, list):
+                    raise ValueError("Expected a list of dictionaries for races")
+            racelist = []
+            for race in races:
+                if not isinstance(race, dict):
+                    raise ValueError("Expected a dictionary for each race in races")
+                circuit = race.get("Circuit", {})
+                location = circuit.get("Location", {})
+                lat = float(location.get("lat", 0))
+                lon = float(location.get("long", 0))
+                racelist.append((
+                    race.get("season"), race.get("round"), race.get("url"), race.get("raceName"),
+                    circuit.get("circuitId"), circuit.get("circuitName"),
+                    lat, lon, location.get("locality"), location.get("country"),
+                    race.get("date"),
+                ))
+            target_fields = [
+                'season', 'round', 'url', 'raceName', 'circuitId', 'circuitName',
+                'circuitLatitude', 'circuitLongitude', 'circuitLocality', 'circuitCountry',
+                'date'
+            ]
+            mysql_hook.insert_rows(table='Race', rows=racelist, target_fields=target_fields)
+
+insert_mysql_task = PythonOperator(
+    task_id='insert_race_mysql_task',
+    python_callable=insert_mysql_hook,
+    dag=dag
+)
+
+# Task 5: Extract MySQL data and save it to a CSV file
+def extract_mysql_and_save_file():
+    engine = create_engine('<MYSQL_CONNECTION_STRING>')
+    query = "<SQL_QUERY>"
+    df = pd.read_sql(query, engine)
+    file_name = '/opt/airflow/dags/formula1data_final.csv'
+    df.to_csv(file_name, index=False)
+    return file_name
+
+task_extract_and_save = PythonOperator(
+    task_id='extract_and_save_task',
+    python_callable=extract_mysql_and_save_file,
+    dag=dag
+)
+
+# Task 6: Upload the saved file to an AWS S3 bucket
+def upload_s3():
+    file_name = extract_mysql_and_save_file()
+    hook = S3Hook('<AWS_S3_CONNECTION_ID>')
+    hook.load_file(filename=file_name, key='<S3_KEY>', bucket_name='<S3_BUCKET_NAME>')
+
+task_upload_s3 = PythonOperator(
+    task_id='uploadformula1_task',
+    python_callable=upload_s3,
+    dag=dag
+)
+
+# Set task dependencies
+start >> is_api_available >> fetch_all_data >> create_table_mssql_task >> insert_mysql_task >> task_extract_and_save >> task_upload_s3
