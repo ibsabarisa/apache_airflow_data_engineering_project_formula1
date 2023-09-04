@@ -1,0 +1,84 @@
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.mysql_operator import MySqlOperator
+from airflow.hooks.mysql_hook import MySqlHook
+import json
+import os
+
+dag = DAG('<DAG_NAME>',
+          description='<DESCRIPTION>',
+          schedule_interval='@daily',
+          start_date=datetime(2023, 9, 4))
+
+create_table_mssql_task = MySqlOperator(
+    task_id="<TASK_ID_FOR_CREATING_TABLE>",
+    mysql_conn_id='<MYSQL_CONNECTION_ID>',
+    sql="""CREATE TABLE IF NOT EXISTS Race (
+        race_id INT AUTO_INCREMENT PRIMARY KEY,
+        season VARCHAR(4),
+        round INT,
+        url VARCHAR(255),
+        raceName VARCHAR(255),
+        circuitId VARCHAR(255),
+        circuitName VARCHAR(255),
+        circuitLatitude FLOAT,
+        circuitLongitude FLOAT,
+        circuitLocality VARCHAR(255),
+        circuitCountry VARCHAR(255),
+        date DATE
+    );""",
+    dag=dag,
+)
+
+
+def clean_time(time_value):
+    if time_value:
+        return time_value.rstrip('Z')
+    return None
+
+
+@dag.task(task_id="<TASK_ID_FOR_INSERTING_DATA>")
+def insert_mysql_hook():
+    mysql_hook = MySqlHook(mysql_conn_id='<MYSQL_CONNECTION_ID>', schema='<DATABASE_SCHEMA>')
+    directory_path = '<DIRECTORY_PATH>'
+
+    for filename in os.listdir(directory_path):
+        if filename.startswith('<FILENAME_PREFIX>') and filename.endswith('.json'):
+            filepath = os.path.join(directory_path, filename)
+
+            with open(filepath) as f:
+                data = f.read()
+                djson = json.loads(data)
+                races = djson.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+
+                if not isinstance(races, list):
+                    raise ValueError("Expected a list of dictionaries for races")
+
+            racelist = []
+            for race in races:
+                if not isinstance(race, dict):
+                    raise ValueError("Expected a dictionary for each race in races")
+
+                circuit = race.get("Circuit", {})
+                location = circuit.get("Location", {})
+
+                lat = float(location.get("lat", 0))
+                lon = float(location.get("long", 0))
+
+                racelist.append((
+                    race.get("season"), race.get("round"), race.get("url"), race.get("raceName"),
+                    circuit.get("circuitId"), circuit.get("circuitName"),
+                    lat, lon, location.get("locality"), location.get("country"),
+                    race.get("date"),
+                ))
+
+            target_fields = [
+                'season', 'round', 'url', 'raceName', 'circuitId', 'circuitName',
+                'circuitLatitude', 'circuitLongitude', 'circuitLocality', 'circuitCountry',
+                'date'
+            ]
+
+            mysql_hook.insert_rows(table='Race', rows=racelist, target_fields=target_fields)
+
+
+create_table_mssql_task >> insert_mysql_hook()
